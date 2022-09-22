@@ -5,54 +5,62 @@ defmodule CraqValidator do
     errors =
       questions
       |> Enum.with_index()
-      |> Enum.reduce_while([], fn {%{options: options}, index}, acc ->
-        answer = Enum.at(answers, index)
-
-        if is_nil(answer) do
-          acc = [{question_id(index), "was not answered"} | acc]
-          {:cont, acc}
-        else
-          {_, selected_option_index} = answer
-          selected_option = Enum.at(options, selected_option_index)
-
-          case selected_option do
-            %{complete_if_selected: true} ->
-              if next_answer_present?(answers, index) do
-                {:halt,
-                 [
-                   {question_id(index + 1),
-                    "was answered even though a previous response indicated that the questions were complete"}
-                   | acc
-                 ]}
-              else
-                {:halt, acc}
-              end
-
-            %{text: _text} ->
-              {:cont, acc}
-
-            nil ->
-              acc = [
-                {question_id(index), "has an answer that is not on the list of valid answers"}
-                | acc
-              ]
-
-              {:cont, acc}
-          end
+      |> Enum.reduce_while([], fn {_question = %{options: options}, question_index}, errors ->
+        case process_answer(options, answers, question_index) do
+          {:ok, :continue} -> {:cont, errors}
+          {:ok, :complete} -> {:halt, errors}
+          {:error, :continue, error} -> {:cont, errors ++ [error]}
+          {:error, :complete, error} -> {:halt, errors ++ [error]}
         end
       end)
 
     if length(errors) == 0 do
       :ok
     else
-      errors |> Enum.reverse() |> Enum.into(%{})
+      errors
+      |> Enum.map(fn {question_index, error} -> {String.to_atom("q#{question_index}"), error} end)
+      |> Enum.into(%{})
     end
   end
 
-  defp question_id(index), do: String.to_atom("q#{index}")
+  defp process_answer(options, answers, question_index) do
+    question_answer = Enum.at(answers, question_index)
 
-  defp next_answer_present?(answers, current_index),
-    do: answers |> Enum.at(current_index + 1) |> is_nil |> Kernel.not()
+    if is_nil(question_answer) do
+      {:error, :continue, {question_index, "was not answered"}}
+    else
+      {_, selected_option_index} = question_answer
+      selected_option = Enum.at(options, selected_option_index)
+
+      process_selected_option(selected_option, answers, question_index)
+    end
+  end
+
+  defp process_selected_option(_selected_option = nil, _answers, question_index) do
+    {:error, :continue,
+     {question_index, "has an answer that is not on the list of valid answers"}}
+  end
+
+  defp process_selected_option(
+         _selected_option = %{complete_if_selected: true},
+         answers,
+         question_index
+       ) do
+    next_answer_present = fn answers, question_index ->
+      answers |> Enum.at(question_index + 1) |> is_nil |> Kernel.not()
+    end
+
+    if next_answer_present.(answers, question_index) do
+      {:error, :complete,
+       {question_index + 1,
+        "was answered even though a previous response indicated that the questions were complete"}}
+    else
+      {:ok, :complete}
+    end
+  end
+
+  defp process_selected_option(_selected_option = %{text: _text}, _answers, _question_index),
+    do: {:ok, :continue}
 end
 
 defmodule QVTest do
